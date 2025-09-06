@@ -20,7 +20,15 @@
 #define NN_LEARNRATE        0.0001f
 #define NN_DELTA            0.99f
 #define NN_DELAY            1
-#define NN_PATH             "./data/Model.nnalx"
+#define NN_PATH             "./data/Model"
+#define NN_PATHTYPE         "nnalx"
+#define NN_INPUTS           4
+#define NN_OUTPUTS          3
+#define TIME_STEP           0.05f
+
+#define NN_GENS             10
+
+
 
 
 typedef struct PongObject{
@@ -30,29 +38,6 @@ typedef struct PongObject{
     Pixel c;
 } PongObject;
 
-PongObject paddle1;
-PongObject paddle2;
-PongObject ball;
-int score1 = 0;
-int score2 = 0;
-NeuralReward aireward = 0.0f;
-
-void Reset(){
-    paddle1.p.y = 0.5f - PADDLE_HEIGHT * 0.5f;
-    paddle2.p.y = 0.5f - PADDLE_HEIGHT * 0.5f;
-    
-    ball.p.x = 0.5f - BALL_WIDTH * 0.5f;
-    ball.p.y = 0.5f - BALL_HEIGHT * 0.5f;
-    //ball.v.x = BALL_STARTSPEED;
-    //ball.v.y = 0.0f;
-
-    float a = Random_f64_MinMax(0.0f,2.0f * F32_PI);
-    a = F32_Border(a,0.25f * F32_PI,0.75f * F32_PI);
-    a = F32_Border(a,1.25f * F32_PI,1.75f * F32_PI);
-
-    ball.v = Vec2_Mulf(Vec2_OfAngle(a),BALL_STARTSPEED);
-}
-
 PongObject PongObject_New(Vec2 p,Vec2 d,Vec2 v,Pixel c){
     PongObject po;
     po.p = p;
@@ -61,16 +46,14 @@ PongObject PongObject_New(Vec2 p,Vec2 d,Vec2 v,Pixel c){
     po.c = c;
     return po;
 }
-void PongObject_Update(PongObject* po,float t){
+int PongObject_Update(PongObject* po,float t){
     po->p = Vec2_Add(po->p,Vec2_Mulf(po->v,t));
 
     if(po->p.x < -po->d.x){
-        score2++;
-        Reset();
+        return 2;
     }
     if(po->p.x > 1.0f){
-        score1++;
-        Reset();
+        return 1;
     }
     if(po->p.y < 0.0f){
         po->p.y = 0.0f;
@@ -80,6 +63,7 @@ void PongObject_Update(PongObject* po,float t){
         po->p.y = 1.0f - po->d.y;
         po->v.y *= -1.0f;
     }
+    return 0;
 }
 void PongObject_Collision(PongObject* po,PongObject* target){
     if(Overlap_Rect_Rect((Rect){ po->p,po->d },(Rect){ target->p,target->d })){
@@ -100,14 +84,14 @@ void PongObject_Render(PongObject* po){
     RenderRect(po->p.x * GetWidth(),po->p.y * GetHeight(),po->d.x * GetWidth(),po->d.y * GetHeight(),po->c);
 }
 
-void PongObject_Step_Update(PongObject* po,float t){
+NeuralReward PongObject_Step_Update(PongObject* po,float t){
     po->p = Vec2_Add(po->p,Vec2_Mulf(po->v,t));
 
     if(po->p.x < -po->d.x){
-        aireward += 10.0f;
+        return 10.0f;
     }
     if(po->p.x > 1.0f){
-        aireward -= 1.0f;
+        return -1.0f;
     }
     if(po->p.y < 0.0f){
         po->p.y = 0.0f;
@@ -117,8 +101,9 @@ void PongObject_Step_Update(PongObject* po,float t){
         po->p.y = 1.0f - po->d.y;
         po->v.y *= -1.0f;
     }
+    return 0.0f;
 }
-void PongObject_Step_Collision(PongObject* po,PongObject* target){
+NeuralReward PongObject_Step_Collision(PongObject* po,PongObject* target){
     if(Overlap_Rect_Rect((Rect){ po->p,po->d },(Rect){ target->p,target->d })){
         const float s = Vec2_Mag(target->v);
         const float dx = F32_Sign(target->p.x - po->p.x);
@@ -131,72 +116,125 @@ void PongObject_Step_Collision(PongObject* po,PongObject* target){
         target->v = Vec2_Mulf(Vec2_Norm(target->v),s + SPEED_ACCSPEED);
         target->v.y += F32_Sign(target->v.y) * F32_Abs(po->v.y) * 0.1f;
         target->v.y = F32_Abs(target->v.y) * F32_Sign(po->v.y);
-
-        if(po == &paddle2){
-            aireward += 1.0f;
-        }
+        return 1.0f;
     }
+    return 0;
 }
 
-
-
-#define NN_INPUTS       4
-#define NN_OUTPUTS      3
 
 typedef struct PongInfos{
     NeuralType balldx;
     NeuralType bally;
-    NeuralType paddle2y;
     NeuralType ballvy;
+    NeuralType paddle1y;
+    NeuralType paddle2y;
     // other step values
     NeuralType ballx;
-    NeuralType paddle1y;
     NeuralType ballvx;
 } PongInfos;
 
-PongInfos PongInfos_New(){
+PongInfos PongInfos_New(
+    NeuralType ballx,
+    NeuralType bally,
+    NeuralType ballvx,
+    NeuralType ballvy,
+    NeuralType paddle1x,
+    NeuralType paddle1y,
+    NeuralType paddle2x,
+    NeuralType paddle2y
+){
     PongInfos pi;
-    pi.balldx = F32_Abs(ball.p.x - paddle2.p.x);
-    pi.bally = ball.p.y + ball.d.y * 0.5f;
-    pi.paddle2y = paddle2.p.y + paddle2.d.y * 0.5f;
-    pi.ballvy = ball.v.y;
+    pi.balldx = F32_Abs(ballx - paddle2x);
+    pi.bally = bally;
+    pi.ballvy = ballvy;
+    pi.paddle1y = paddle1y;
+    pi.paddle2y = paddle2y;
     // ----------------------
-    pi.ballx = ball.p.x;
-    pi.paddle1y = paddle1.p.y;
-    pi.ballvx = ball.v.x;
+    pi.ballx = ballx;
+    pi.ballvx = ballvx;
     return pi;
 }
 
+typedef struct PongGame{
+    PongObject paddle1;
+    PongObject paddle2;
+    PongObject ball;
+    int score1;
+    int score2;
+    NeuralReward aireward;
+} PongGame;
 
-#define TIME_STEP   0.10f
+void PongGame_Reset(PongGame* pg){
+    pg->paddle1.p.y = 0.5f - PADDLE_HEIGHT * 0.5f;
+    pg->paddle2.p.y = 0.5f - PADDLE_HEIGHT * 0.5f;
+    
+    pg->ball.p.x = 0.5f - BALL_WIDTH * 0.5f;
+    pg->ball.p.y = 0.5f - BALL_HEIGHT * 0.5f;
+    //ball.v.x = BALL_STARTSPEED;
+    //ball.v.y = 0.0f;
 
-char training = 0;
-char ai = 0;
-float ElapTime = 0.05f;
-RLNeuralNetwork nn;
-AlxFont font;
+    float a = Random_f64_MinMax(0.0f,2.0f * F32_PI);
+    a = F32_Border(a,0.25f * F32_PI,0.75f * F32_PI);
+    a = F32_Border(a,1.25f * F32_PI,1.75f * F32_PI);
 
-void NeuralEnviroment_Func_State(RLNeuralNetwork* nn,DecisionState* ds){
-    PongInfos pi_before = PongInfos_New();
+    pg->ball.v = Vec2_Mulf(Vec2_OfAngle(a),BALL_STARTSPEED);
+}
+PongGame PongGame_New(){
+    PongGame pg;
+    pg.paddle1 = PongObject_New((Vec2){ PADDLE_1_POSX,0.0f },(Vec2){ PADDLE_WIDTH,PADDLE_HEIGHT },(Vec2){ 0.0f,0.0f },PADDLE_1_COLOR);
+    pg.paddle2 = PongObject_New((Vec2){ PADDLE_2_POSX,0.0f },(Vec2){ PADDLE_WIDTH,PADDLE_HEIGHT },(Vec2){ 0.0f,0.0f },PADDLE_2_COLOR);
+    pg.ball = PongObject_New((Vec2){ 0.0f,0.0f },(Vec2){ BALL_WIDTH,BALL_HEIGHT },(Vec2){ 0.0f,0.0f },BALL_COLOR);
+    pg.score1 = 0;
+    pg.score2 = 0;
+    pg.aireward = 0.0f;
+    PongGame_Reset(&pg);
+    return pg;
+}
+void PongGame_Update(PongGame* pg,float ElapsedTime){
+    PongObject_Update(&pg->paddle1,ElapsedTime);
+    PongObject_Update(&pg->paddle2,ElapsedTime);
+    PongObject_Update(&pg->ball,ElapsedTime);
+
+    PongObject_Collision(&pg->paddle1,&pg->ball);
+    PongObject_Collision(&pg->paddle2,&pg->ball);
+}
+void PongGame_State(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds){
+    PongInfos pi_before = PongInfos_New(
+        pg->ball.p.x + pg->ball.d.x * 0.5f,
+        pg->ball.p.y + pg->ball.d.y * 0.5f,
+        pg->ball.v.x,
+        pg->ball.v.y,
+        pg->paddle1.p.x + pg->paddle1.d.x * 0.5f,
+        pg->paddle1.p.y + pg->paddle1.d.y * 0.5f,
+        pg->paddle2.p.x + pg->paddle2.d.x * 0.5f,
+        pg->paddle2.p.y + pg->paddle2.d.y * 0.5f
+    );
     DecisionState_SetBefore(ds,(NeuralType*)&pi_before);
 }
-void NeuralEnviroment_Func_Step(RLNeuralNetwork* nn,DecisionState* ds,int d){
-    PongInfos pi_before = PongInfos_New();
+void PongGame_Step(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds,int d){
+    PongInfos pi_before = PongInfos_New(
+        pg->ball.p.x + pg->ball.d.x * 0.5f,
+        pg->ball.p.y + pg->ball.d.y * 0.5f,
+        pg->ball.v.x,
+        pg->ball.v.y,
+        pg->paddle1.p.x + pg->paddle1.d.x * 0.5f,
+        pg->paddle1.p.y + pg->paddle1.d.y * 0.5f,
+        pg->paddle2.p.x + pg->paddle2.d.x * 0.5f,
+        pg->paddle2.p.y + pg->paddle2.d.y * 0.5f
+    );
     DecisionState_SetBefore(ds,(NeuralType*)&pi_before);
 
-    NeuralReward reward = aireward;
-    aireward = 0.0f;
+    NeuralReward aireward = 0.0f;
 
-    if(d==0)      paddle2.v.y = -PADDLE_SPEED;
-    else if(d==1) paddle2.v.y = PADDLE_SPEED;
-    else if(d==2) paddle2.v.y = 0.0f;
+    if(d==0)      pg->paddle2.v.y = -PADDLE_SPEED;
+    else if(d==1) pg->paddle2.v.y = PADDLE_SPEED;
+    else if(d==2) pg->paddle2.v.y = 0.0f;
     
-    PongObject_Step_Update(&paddle1,TIME_STEP);
-    PongObject_Step_Update(&paddle2,TIME_STEP);
-    PongObject_Step_Update(&ball,TIME_STEP);
-
-    PongObject_Step_Collision(&paddle1,&ball);
-    PongObject_Step_Collision(&paddle2,&ball);
+    aireward += PongObject_Step_Update(&pg->paddle1,TIME_STEP);
+    aireward += PongObject_Step_Update(&pg->paddle2,TIME_STEP);
+    aireward += PongObject_Step_Update(&pg->ball,TIME_STEP);
+    aireward += PongObject_Step_Collision(&pg->paddle1,&pg->ball);
+    aireward += PongObject_Step_Collision(&pg->paddle2,&pg->ball);
 
     // aireward += (1.0f - 
     //     //Vec2_Mag(Vec2_Sub(
@@ -207,30 +245,50 @@ void NeuralEnviroment_Func_Step(RLNeuralNetwork* nn,DecisionState* ds,int d){
     //     (ball.p.y     + ball.d.y      * 0.5f)
     // ) * 0.5f * window.ElapsedTime;
 
-    const Vec2 pm = Vec2_Add(paddle2.p, Vec2_Mulf(paddle2.d,0.5f)); 
-    const Vec2 bm = Vec2_Add(ball.p,    Vec2_Mulf(ball.d,   0.5f)); 
+    const Vec2 pm = Vec2_Add(pg->paddle2.p, Vec2_Mulf(pg->paddle2.d,0.5f)); 
+    const Vec2 bm = Vec2_Add(pg->ball.p,    Vec2_Mulf(pg->ball.d,   0.5f)); 
     const Vec2 dp = Vec2_Sub(pm,bm);
-    if(F32_Sign(dp.y) == F32_Sign(ball.v.y))
+    if(F32_Sign(dp.y) == F32_Sign(pg->ball.v.y))
         aireward += (1.0f - dp.y) * 0.5f * window.ElapsedTime;
 
-    NeuralReward ret = aireward;
-    aireward = reward;
-
-    PongInfos pi_after = PongInfos_New();
+    PongInfos pi_after = PongInfos_New(
+        pg->ball.p.x + pg->ball.d.x * 0.5f,
+        pg->ball.p.y + pg->ball.d.y * 0.5f,
+        pg->ball.v.x,
+        pg->ball.v.y,
+        pg->paddle1.p.x + pg->paddle1.d.x * 0.5f,
+        pg->paddle1.p.y + pg->paddle1.d.y * 0.5f,
+        pg->paddle2.p.x + pg->paddle2.d.x * 0.5f,
+        pg->paddle2.p.y + pg->paddle2.d.y * 0.5f
+    );
     DecisionState_SetAfter(ds,(NeuralType*)&pi_after);
-
-    DecisionState_SetReward(ds,ret);
+    DecisionState_SetReward(ds,aireward);
 }
-void NeuralEnviroment_Func_Undo(RLNeuralNetwork* nn,DecisionState* ds){
+void PongGame_Undo(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds){
     PongInfos* pi = (PongInfos*)ds->before;
-    ball.p.y = pi->bally - ball.d.y * 0.5f;
-    paddle2.p.y = pi->paddle2y - paddle2.d.y * 0.5f;
-    ball.v.y = pi->ballvy;
+    pg->ball.p.y = pi->bally;
+    pg->ball.v.y = pi->ballvy;
+    pg->paddle1.p.y = pi->paddle1y;
+    pg->paddle2.p.y = pi->paddle2y;
     // ----------------------
-    ball.p.x = pi->ballx;
-    paddle1.p.y = pi->paddle1y;
-    ball.v.x = pi->ballvx;
+    pg->ball.p.x = pi->ballx;
+    pg->ball.v.x = pi->ballvx;
 }
+void PongGame_Render(PongGame* pg){
+    PongObject_Render(&pg->paddle1);
+    PongObject_Render(&pg->paddle2);
+    PongObject_Render(&pg->ball);
+
+    String str = String_Format("%d : %d",pg->paddle1,pg->score2);
+    RenderCStrSize(str.Memory,str.size,(GetWidth() - str.size * GetAlxFont()->CharSizeX) * 0.5f,0.0f,WHITE);
+    String_Free(&str);
+}
+
+
+char training = 0;
+char ai = 0;
+Neat nt;
+AlxFont font;
 
 void NeuralNetwork_Render(NeuralNetwork* nn){
     for(int i = 0;i<nn->layers.size;i++){
@@ -271,25 +329,22 @@ void Setup(AlxWindow* w){
     
     font = AlxFont_MAKE_YANIS(12,12);
 
-    paddle1 = PongObject_New((Vec2){ PADDLE_1_POSX,0.0f },(Vec2){ PADDLE_WIDTH,PADDLE_HEIGHT },(Vec2){ 0.0f,0.0f },PADDLE_1_COLOR);
-    paddle2 = PongObject_New((Vec2){ PADDLE_2_POSX,0.0f },(Vec2){ PADDLE_WIDTH,PADDLE_HEIGHT },(Vec2){ 0.0f,0.0f },PADDLE_2_COLOR);
-    ball = PongObject_New((Vec2){ 0.0f,0.0f },(Vec2){ BALL_WIDTH,BALL_HEIGHT },(Vec2){ 0.0f,0.0f },BALL_COLOR);
-    Reset();
+    PongGame envs[NN_GENS];
+    for(int i = 0;i<NN_GENS;i++)
+        envs[i] = PongGame_New();
 
-    nn = RLNeuralNetwork_New(
-        NeuralNetwork_Make((NeuralLayerBuilder[]){
-            NeuralLayerBuilder_Make(NN_INPUTS,"relu"),
-            NeuralLayerBuilder_Make(32,"relu"),
-            NeuralLayerBuilder_Make(NN_OUTPUTS,"softmax"),
-            NeuralLayerBuilder_End()
-        }),
-        NeuralEnviroment_New(
-            (void*)NeuralEnviroment_Func_State,
-            (void*)NeuralEnviroment_Func_Step,
-            (void*)NeuralEnviroment_Func_Undo,
-            sizeof(PongInfos) / sizeof(NeuralType),
-            NN_OUTPUTS
-        )
+    nt = Neat_New(
+        NN_GENS,
+        NN_INPUTS,
+        NN_OUTPUTS,
+        sizeof(PongInfos) / sizeof(NeuralType),
+        (void*)PongGame_State,
+        (void*)PongGame_Step,
+        (void*)PongGame_Undo,
+        10.0f,
+        sizeof(PongGame),
+        envs,
+        NULL
     );
 }
 void Update(AlxWindow* w){
@@ -300,105 +355,67 @@ void Update(AlxWindow* w){
     }
     if(Stroke(ALX_KEY_Z).PRESSED){
         ai = ai + 1;
-        if(ai > 3) ai = 0;
-    }
-    if(Stroke(ALX_KEY_E).PRESSED){
-        NeuralNetwork_Save(&nn.nn,NN_PATH);
-        printf("[NeuralNetwork]: Save -> Success!\n");
-    }
-    if(Stroke(ALX_KEY_D).PRESSED){
-        NeuralNetwork_Free(&nn.nn);
-        if(Files_isFile(NN_PATH)){
-            nn.nn = NeuralNetwork_Load(NN_PATH);
-            printf("[NeuralNetwork]: Load -> Success!\n");
-        }else{
-            nn = RLNeuralNetwork_New(
-                NeuralNetwork_Make((NeuralLayerBuilder[]){
-                    NeuralLayerBuilder_Make(NN_INPUTS,"relu"),
-                    NeuralLayerBuilder_Make(32,"relu"),
-                    NeuralLayerBuilder_Make(NN_OUTPUTS,"softmax"),
-                    NeuralLayerBuilder_End()
-                }),
-                NeuralEnviroment_New(
-                    (void*)NeuralEnviroment_Func_State,
-                    (void*)NeuralEnviroment_Func_Step,
-                    (void*)NeuralEnviroment_Func_Undo,
-                    sizeof(PongInfos) / sizeof(NeuralType),
-                    NN_OUTPUTS
-                )
-            );
-            printf("[NeuralNetwork]: Load -> Failed!\n");
-        }
+        if(ai >= NN_GENS) ai = 0;
     }
 
-    w->ElapsedTime = ElapTime;
-    if(Stroke(ALX_KEY_Q).DOWN)  ElapTime *= 1.01f;
-    if(Stroke(ALX_KEY_A).DOWN)  ElapTime *= 0.99f;
+    Neat_Update(&nt,NN_DELTA,NN_LEARNRATE);
 
-    //if(Stroke(ALX_KEY_W).DOWN)          paddle1.v.y = -PADDLE_SPEED;
-    //else if(Stroke(ALX_KEY_S).DOWN)     paddle1.v.y = PADDLE_SPEED;
-    //else                                paddle1.v.y = 0.0f;
+    for(int i = 0;i<nt.gensize;i++){
+        RLNeuralNetworkEnv* rlnnenv = nt.rlnnenvs + i;
+        PongGame* pg = (PongGame*)rlnnenv->env;
 
-    //if(Stroke(ALX_KEY_UP).DOWN)         paddle2.v.y = -PADDLE_SPEED;
-    //else if(Stroke(ALX_KEY_DOWN).DOWN)  paddle2.v.y = PADDLE_SPEED;
-    //else                                paddle2.v.y = 0.0f;
+        const float mb = pg->ball.p.y + pg->ball.d.y * 0.5f;
+        const float m1 = pg->paddle1.p.y + pg->paddle1.d.y * 0.5f + pg->paddle1.d.y * 0.2f * Random_f64_MinMax(-1.0f,1.0f);
+        const float dy = mb - m1;
+        pg->paddle1.v.y = PADDLE_SPEED * F32_Sign(dy);
 
+        PongInfos pi = PongInfos_New(
+            pg->ball.p.x + pg->ball.d.x * 0.5f,
+            pg->ball.p.y + pg->ball.d.y * 0.5f,
+            pg->ball.v.x,
+            pg->ball.v.y,
+            pg->paddle1.p.x + pg->paddle1.d.x * 0.5f,
+            pg->paddle1.p.y + pg->paddle1.d.y * 0.5f,
+            pg->paddle2.p.x + pg->paddle2.d.x * 0.5f,
+            pg->paddle2.p.y + pg->paddle2.d.y * 0.5f
+        );
+        NeuralNetwork_Calc(&rlnnenv->rlnn.nn,(NeuralType*)&pi);
 
-    if(training){
-        RLNeuralNetwork_LearnDecisionState(&nn,NULL,NN_DELTA,NN_LEARNRATE);
+        int d = RLNeuralNetwork_DoNextDecision(&rlnnenv->rlnn);
+        if(d==0)      pg->paddle2.v.y = -PADDLE_SPEED;
+        else if(d==1) pg->paddle2.v.y = PADDLE_SPEED;
+        else if(d==2) pg->paddle2.v.y = 0.0f;
+        else          printf("Error in %d!\n",i);
+
+        //const int state = (int)Random_u32_MinMax(0,3) - 1;
+        //pg->paddle2.v.y = PADDLE_SPEED * state;
+
+        PongGame_Update(pg,TIME_STEP);
     }
-
-    const float dy = (ball.p.y + ball.d.y * 0.5f) - (paddle1.p.y + paddle1.d.y * 0.5f + paddle1.d.y * 0.2f * Random_f64_MinMax(-1.0f,1.0f));
-    paddle1.v.y = PADDLE_SPEED * F32_Sign(dy);
-
-    if(ai == 0){
-        PongInfos pi = PongInfos_New();
-        NeuralNetwork_Calc(&nn.nn,(NeuralType*)&pi);
-
-        int d = NeuralNetwork_Decision(&nn.nn);
-        if(d==0)      paddle2.v.y = -PADDLE_SPEED;
-        else if(d==1) paddle2.v.y = PADDLE_SPEED;
-        else if(d==2) paddle2.v.y = 0.0f;
-        else          printf("Error!\n");
-    }else if(ai == 1){
-        int state = (int)Random_u32_MinMax(0,3) - 1;
-        paddle2.v.y = PADDLE_SPEED * state;
-    }else if(ai == 2){
-        const float dy = (ball.p.y + ball.d.y * 0.5f) - (paddle2.p.y + paddle2.d.y * 0.5f + paddle1.d.y * 0.5f * Random_f64_MinMax(-1.0f,1.0f));
-        paddle2.v.y = PADDLE_SPEED * F32_Sign(dy);
-    }else{
-        if(Stroke(ALX_KEY_UP).DOWN)         paddle2.v.y = -PADDLE_SPEED;
-        else if(Stroke(ALX_KEY_DOWN).DOWN)  paddle2.v.y = PADDLE_SPEED;
-        else                                paddle2.v.y = 0.0f;
-    }
-
-    PongObject_Update(&paddle1,w->ElapsedTime);
-    PongObject_Update(&paddle2,w->ElapsedTime);
-    PongObject_Update(&ball,w->ElapsedTime);
-    
-    PongObject_Collision(&paddle1,&ball);
-    PongObject_Collision(&paddle2,&ball);
 
 	Clear(BLACK);
 
-    PongObject_Render(&paddle1);
-    PongObject_Render(&paddle2);
-    PongObject_Render(&ball);
+    RLNeuralNetworkEnv* shown = nt.rlnnenvs + ai;
+    PongGame_Render(shown->env);
 
-    NeuralNetwork_Render(&nn.nn);
-
-    String str = String_Format("Training: %d, Ai: %d, T:%f, R:%f",training,ai,ElapTime,aireward);
+    String str = String_Format("Training: %d, Ai: %d, F:%f, AF:%f",training,ai,shown->rlnn.nenv.fittness,shown->rlnn.nenv.avfittness);
     RenderCStrSizeAlxFont(&font,str.Memory,str.size,GetWidth() - 600.0f,0.0f,WHITE);
-    String_Free(&str);
-
-    str = String_Format("%d : %d",score1,score2);
-    RenderCStrSize(str.Memory,str.size,(GetWidth() - str.size * GetAlxFont()->CharSizeX) * 0.5f,0.0f,WHITE);
     String_Free(&str);
 
     Thread_Sleep_M(NN_DELAY);
 }
 void Delete(AlxWindow* w){
-	RLNeuralNetwork_Free(&nn);
+	for(int i = 0;i<nt.gensize;i++){
+        RLNeuralNetworkEnv* rlnn = nt.rlnnenvs + i;
+        
+        CStr filename = CStr_Format(NN_PATH "%d." NN_PATHTYPE,i);
+        NeuralNetwork_Save(&rlnn->rlnn.nn,filename);
+        CStr_Free(&filename);
+        
+        printf("[NeuralNetwork]: Save %d -> Success!\n",i);
+    }
+    
+    Neat_Free(&nt);
     AlxFont_Free(&font);
 }
 

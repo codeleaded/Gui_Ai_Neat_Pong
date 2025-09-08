@@ -6,7 +6,7 @@
 #define PADDLE_2_POSX       0.95f
 #define PADDLE_WIDTH        0.025f
 #define PADDLE_HEIGHT       0.18f
-#define PADDLE_SPEED        0.25f
+#define PADDLE_SPEED        0.5f
 
 #define BALL_WIDTH          0.0125f
 #define BALL_HEIGHT         0.025f
@@ -17,18 +17,15 @@
 #define PADDLE_2_COLOR      RED
 #define BALL_COLOR          WHITE
 
+#define TIME_STEP           0.05f
 #define NN_LEARNRATE        0.0001f
 #define NN_DELTA            0.99f
-#define NN_DELAY            1
+#define NN_DELAY            0
 #define NN_PATH             "./data/Model"
 #define NN_PATHTYPE         "nnalx"
 #define NN_INPUTS           4
 #define NN_OUTPUTS          3
-#define TIME_STEP           0.05f
-
 #define NN_GENS             10
-
-
 
 
 typedef struct PongObject{
@@ -116,7 +113,7 @@ NeuralReward PongObject_Step_Collision(PongObject* po,PongObject* target){
         target->v = Vec2_Mulf(Vec2_Norm(target->v),s + SPEED_ACCSPEED);
         target->v.y += F32_Sign(target->v.y) * F32_Abs(po->v.y) * 0.1f;
         target->v.y = F32_Abs(target->v.y) * F32_Sign(po->v.y);
-        return 1.0f;
+        if(po->p.x > 0.5f) return 1.0f;
     }
     return 0;
 }
@@ -187,18 +184,29 @@ PongGame PongGame_New(){
     pg.score1 = 0;
     pg.score2 = 0;
     pg.aireward = 0.0f;
+
     PongGame_Reset(&pg);
     return pg;
 }
 void PongGame_Update(PongGame* pg,float ElapsedTime){
     PongObject_Update(&pg->paddle1,ElapsedTime);
     PongObject_Update(&pg->paddle2,ElapsedTime);
-    PongObject_Update(&pg->ball,ElapsedTime);
+    int ret = PongObject_Update(&pg->ball,ElapsedTime);
+    if(ret == 1){
+        pg->score1++;
+        PongGame_Reset(pg);
+    }
+    if(ret == 2){
+        pg->score2++;
+        PongGame_Reset(pg);
+    }
 
     PongObject_Collision(&pg->paddle1,&pg->ball);
     PongObject_Collision(&pg->paddle2,&pg->ball);
 }
-void PongGame_State(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds){
+void PongGame_State(RLNeuralNetworkEnv* nnenv,DecisionState* ds){
+    PongGame* pg = (PongGame*)nnenv->env;
+    
     PongInfos pi_before = PongInfos_New(
         pg->ball.p.x + pg->ball.d.x * 0.5f,
         pg->ball.p.y + pg->ball.d.y * 0.5f,
@@ -211,7 +219,9 @@ void PongGame_State(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds){
     );
     DecisionState_SetBefore(ds,(NeuralType*)&pi_before);
 }
-void PongGame_Step(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds,int d){
+void PongGame_Step(RLNeuralNetworkEnv* nnenv,DecisionState* ds,int d){
+    PongGame* pg = (PongGame*)nnenv->env;
+
     PongInfos pi_before = PongInfos_New(
         pg->ball.p.x + pg->ball.d.x * 0.5f,
         pg->ball.p.y + pg->ball.d.y * 0.5f,
@@ -264,14 +274,16 @@ void PongGame_Step(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds,int d){
     DecisionState_SetAfter(ds,(NeuralType*)&pi_after);
     DecisionState_SetReward(ds,aireward);
 }
-void PongGame_Undo(PongGame* pg,RLNeuralNetwork* nn,DecisionState* ds){
+void PongGame_Undo(RLNeuralNetworkEnv* nnenv,DecisionState* ds){
+    PongGame* pg = (PongGame*)nnenv->env;
+
     PongInfos* pi = (PongInfos*)ds->before;
-    pg->ball.p.y = pi->bally;
+    pg->ball.p.y = pi->bally - pg->ball.d.y * 0.5f;
     pg->ball.v.y = pi->ballvy;
-    pg->paddle1.p.y = pi->paddle1y;
-    pg->paddle2.p.y = pi->paddle2y;
+    pg->paddle1.p.y = pi->paddle1y - pg->paddle1.d.y * 0.5f;
+    pg->paddle2.p.y = pi->paddle2y - pg->paddle2.d.y * 0.5f;
     // ----------------------
-    pg->ball.p.x = pi->ballx;
+    pg->ball.p.x = pi->ballx - pg->ball.d.x * 0.5f;
     pg->ball.v.x = pi->ballvx;
 }
 void PongGame_Render(PongGame* pg){
@@ -279,14 +291,20 @@ void PongGame_Render(PongGame* pg){
     PongObject_Render(&pg->paddle2);
     PongObject_Render(&pg->ball);
 
-    String str = String_Format("%d : %d",pg->paddle1,pg->score2);
+    // String str = String_Format(". %f, . %f, %f %f",pg->paddle1.p.y,pg->paddle2.p.y,pg->ball.p.x,pg->ball.p.y);
+    // RenderCStrSize(str.Memory,str.size,0.0f,(GetHeight() - GetAlxFont()->CharSizeY),WHITE);
+    // String_Free(&str);
+    
+    String str = String_Format("%d : %d",pg->score1,pg->score2);
     RenderCStrSize(str.Memory,str.size,(GetWidth() - str.size * GetAlxFont()->CharSizeX) * 0.5f,0.0f,WHITE);
     String_Free(&str);
 }
 
 
-char training = 0;
-char ai = 0;
+char training;
+char ai;
+Timepoint last;
+FDuration delay;
 Neat nt;
 AlxFont font;
 
@@ -326,7 +344,11 @@ void NeuralNetwork_Render(NeuralNetwork* nn){
 
 void Setup(AlxWindow* w){
     RGA_Set(Time_Nano());
-    
+
+    training = 0;
+    ai = 0;
+    last = Time_Nano();
+    delay = 5.0;
     font = AlxFont_MAKE_YANIS(12,12);
 
     PongGame envs[NN_GENS];
@@ -341,7 +363,7 @@ void Setup(AlxWindow* w){
         (void*)PongGame_State,
         (void*)PongGame_Step,
         (void*)PongGame_Undo,
-        10.0f,
+        1000.0f,
         sizeof(PongGame),
         envs,
         NULL
@@ -356,6 +378,28 @@ void Update(AlxWindow* w){
     if(Stroke(ALX_KEY_Z).PRESSED){
         ai = ai + 1;
         if(ai >= NN_GENS) ai = 0;
+    }
+    if(Stroke(ALX_KEY_L).PRESSED){
+        for(int i = 0;i<nt.gensize;i++){
+            RLNeuralNetworkEnv* rlnnenv = nt.rlnnenvs + i;
+            
+            CStr path = CStr_Format(NN_PATH "%d." NN_PATHTYPE,i);
+            if(Files_isFile(path)){
+                NeuralNetwork_Free(&rlnnenv->rlnn.nn);
+                rlnnenv->rlnn.nn = NeuralNetwork_Load(path);
+                printf("Loaded \"%s\"\n",path);
+            }else{
+                printf("Didn't Load \"%s\"\n",path);
+            }
+        }
+    }
+
+    const Timepoint now = Time_Nano(); 
+    if(Time_Elapsed(last,now) >= delay){
+        last = now;
+        printf("--- Gen %u ---\n",nt.gencount);
+        Neat_SurvivalOfFittest(&nt);
+        printf("--------------\n");
     }
 
     Neat_Update(&nt,NN_DELTA,NN_LEARNRATE);
@@ -397,6 +441,8 @@ void Update(AlxWindow* w){
 
     RLNeuralNetworkEnv* shown = nt.rlnnenvs + ai;
     PongGame_Render(shown->env);
+
+    NeuralNetwork_Render(&shown->rlnn.nn);
 
     String str = String_Format("Training: %d, Ai: %d, F:%f, AF:%f",training,ai,shown->rlnn.nenv.fittness,shown->rlnn.nenv.avfittness);
     RenderCStrSizeAlxFont(&font,str.Memory,str.size,GetWidth() - 600.0f,0.0f,WHITE);
